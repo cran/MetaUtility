@@ -1,4 +1,100 @@
 
+
+################################ FNs: SCRAPING PUBLISHED META-ANALYSIS ################################
+
+
+#' Parse a string with point estimate and confidence interval
+#'
+#' Given a vector of strings such as "0.65 (0.6, 0.70)", for example obtained by running optical character recognition (OCR)
+#' software on a screenshot of a published forest plot, parses the strings into a dataframe of
+#' point estimates and upper confidence interval limits. Assumes that the point estimate occurs before
+#' an opening bracket of the form "(" or "[" and that the confidence interval upper limit follows a
+#' the character \code{sep} (by default a comma, but might be a hyphen, for example). To further parse this dataframe
+#' into point estimates and variances, see \code{MetaUtility::scrape_meta}.
+#' @param string A vector of strings to be parsed.
+#' @param sep The character (not including whitespaces) separating the lower from the upper limits.
+#' @export
+#' @importFrom
+#' stringr str_replace_all str_remove_all
+#' @examples
+#' # messy string of confidence intervals
+#' mystring = c( "0.65 [0.6, 0.7]", "0.8(0.5, 0.9]", "1.2  [0.3, 1.5)")
+#' parse_CI_string(mystring)
+#'
+#' # now with a hyphen separator
+#' mystring = c( "0.65 [0.6- 0.7]", "0.8(0.5 - 0.9]", "1.2  [0.3 -1.5)")
+#' parse_CI_string(mystring, sep="-")
+
+# assumes a comma before the upper limit
+# everything before first bracket treated as point estimate
+
+
+parse_CI_string = function( string, sep = "," ) {
+
+  # standardize the CI brackets
+  string = str_replace_all(string, "\\[", "\\(")
+  string = str_replace_all(string, "\\]", "\\)")
+
+  # remove all spaces
+  string = str_replace_all(string, " ", "")
+
+  # parse CI string into est and upper limit
+  yi = as.numeric( unlist( lapply( strsplit( string, "\\("), function(x) x[1] ) ) )
+
+  # hi will be the last entry after the comma
+  hi = unlist( lapply( strsplit( string, sep), function(x) x[length(x)] ) )
+  hi = as.numeric( str_replace_all(hi, "\\)", "") )
+
+  # remove stupid characters
+  hi = as.numeric( str_remove_all( hi, "[) ,]" ) )
+
+  return( data.frame( yi, hi) )
+}
+
+
+
+#' Convert forest plot or summary table to meta-analytic dataset
+#'
+#' Given relative risks (RR) and upper bounds of 95\% confidence intervals (CI)
+#' from a forest plot or summary table, returns a dataframe ready for meta-analysis
+#' (e.g., via the \code{metafor} package) with the log-RRs and their variances.
+#' Optionally, the user may indicate studies for which the point estimate is to be
+#' interpreted as an odds ratios of a common outcome rather than a relative risk;
+#' for such studies, the function applies VanderWeele (2017)'s square-root transformation to convert
+#' the odds ratio to an approximate risk ratio.
+#' @param type \code{RR} if point estimates are RRs or ORs (to be handled on log scale); \code{raw} if point estimates are raw differences, standardized mean differences, etc. (such that they can be handled with no transformations)
+#' @param est Vector of study point estimates on RR or OR scale
+#' @param hi Vector of upper bounds of 95\% CIs on RRs
+#' @param sqrt Vector of booleans (TRUE/FALSE) for whether each study measured an odds ratio of a common outcome that should be approximated as a risk ratio via the square-root transformation
+#' @export
+#' @references
+#' 1. VanderWeele TJ (2017). On a square-root transformation of the odds ratio for a common outcome. Epidemiology.
+#' @import stats
+
+scrape_meta = function( type="RR", est, hi, sqrt=FALSE ){
+
+  if ( type == "RR" ) {
+    # take square root for certain elements
+    RR = est
+    RR[sqrt] = sqrt( RR[sqrt] )
+
+    # same for upper CI limit
+    hi.RR = hi
+    hi.RR[sqrt] = sqrt( hi.RR[sqrt] )
+
+    sei = ( log(hi.RR) - log(RR) ) / qnorm(.975)
+
+    return( data.frame( yi = log(RR), vyi = sei^2 ) )
+
+  } else if ( type == "raw" ) {
+
+    sei = ( hi - est ) / qnorm(.975)
+    return( data.frame( yi = est, vyi = sei^2 ) )
+  }
+}
+
+
+
 ################################ FNs: FORMATTING ################################
 
 #' Round while keeping trailing zeroes
@@ -168,8 +264,13 @@ tau_CI = function( meta,
 #' such that if any bootstrap iterates fail (usually because of model estimation problems), the error message is printed but the
 #' bootstrap iterate is simply discarded so that confidence interval estimation can proceed.
 #' @references
-#' Mathur MB & VanderWeele TJ. New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine (2018).
+#' 1. Mathur MB & VanderWeele TJ. New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine (2018).
+#'
+#' 2. Mathur MB & VanderWeele TJ. New metrics for multisite replication projects. Under review.
 #' @examples
+#'
+#' ##### Example 1: BCG Vaccine and Tuberculosis Meta-Analysis #####
+#'
 #' # calculate effect sizes for example dataset
 #' d = metafor::escalc(measure="RR", ai=tpos, bi=tneg,
 #'                    ci=cpos, di=cneg, data=metafor::dat.bcg)
@@ -212,6 +313,51 @@ tau_CI = function( meta,
 #'               yi.name = "yi",
 #'               vi.name = "vi" )
 #' }
+#'
+#' ##### Example 2: Meta-Analysis of Multisite Replication Studies #####
+#'
+#'  # replication estimates (Fisher's z scale) and SEs
+#'  # from moral credential example in reference #2
+#'  r.fis = c(0.303, 0.078, 0.113, -0.055, 0.056, 0.073,
+#'  0.263, 0.056, 0.002, -0.106, 0.09, 0.024, 0.069, 0.074,
+#'  0.107, 0.01, -0.089, -0.187, 0.265, 0.076, 0.082)
+#'
+#'  r.SE = c(0.111, 0.092, 0.156, 0.106, 0.105, 0.057,
+#'  0.091, 0.089, 0.081, 0.1, 0.093, 0.086, 0.076,
+#'  0.094, 0.065, 0.087, 0.108, 0.114, 0.073, 0.105, 0.04)
+#'
+#'  d = data.frame( yi = r.fis,
+#'                  vi = r.SE^2 )
+#'
+#'  # meta-analyze the replications
+#'  m = metafor::rma.uni( yi = r.fis, vi = r.SE^2, measure = "ZCOR" )
+#'
+#'  # probability of true effect above r = 0.10 = 28%
+#'  # convert threshold on r scale to Fisher's z
+#'  q = r_to_z(0.10)
+#'
+#'  # bootstrap reps should be higher in practice (e.g., 1000)
+#'  # here using only 100 for speed
+#'  prop_stronger( q = q,
+#'                 M = m$b,
+#'                 se.M = m$se,
+#'                 t2 = m$tau2,
+#'                 se.t2 = m$se.tau2,
+#'                 tail = "above",
+#'                 dat = d,
+#'                 R = 250 )
+#'
+#'
+#'  # probability of true effect equally strong in opposite direction
+#'  q.star = r_to_z(-0.10)
+#'  prop_stronger( q = q.star,
+#'                 M = m$b,
+#'                 se.M = m$se,
+#'                 t2 = m$tau2,
+#'                 se.t2 = m$se.tau2,
+#'                 tail = "below",
+#'                 dat = d,
+#'                 R = 250 )
 
 prop_stronger = function( q,
                           M,
@@ -228,8 +374,6 @@ prop_stronger = function( q,
                           yi.name = "yi",
                           vi.name = "vi" ) {
 
-
-  # ~~~~~~~~~~~~~~~~~~~~~~ BEGINNING OF OUR ACTUAL FUNCTION ~~~~~~~~~~~~~~~~~~~~~~ #
 
   ##### Check for Bad Input #####
   if ( t2 < 0 ) stop("Heterogeneity cannot be negative")
@@ -285,9 +429,6 @@ prop_stronger = function( q,
 
       # if BCa fails (due to infinite w adjustment issue), use percentile instead
       boot.values = tryCatch( {
-
-        # ~~ test only
-        # stop("Fake error")
 
         bootCIs = boot.ci(boot.res,
                           type="bca",
@@ -347,11 +488,26 @@ prop_stronger = function( q,
     }
   }
 
+  ##### Normality Check #####
+  if ( !is.null(dat) ) {
+    if ( !yi.name %in% names(dat) ) stop("dat must contain variable called yi.name.")
+    if ( !vi.name %in% names(dat) ) stop("dat must contain variable called vi.name.")
+
+    # normalized point estimates
+    yi.norm = ( dat[[yi.name]] - c(M) ) / sqrt( dat[[vi.name]] + c(t2) )
+
+    # Shapiro-Wilk test
+    shapiro.pval = shapiro.test( yi.norm )$p.value
+  } else {
+    shapiro.pval = NA
+  }
+
   # return results
   res = data.frame( Est = phat,
-                    SE = SE,
-                    lo = lo,
-                    hi = hi )
+                    SE,
+                    lo,
+                    hi,
+                    shapiro.pval )
   rownames(res) = NULL
   res
 }
@@ -384,9 +540,6 @@ get_stat = function( original,
 
   # tryCatch in case meta-analysis runs into Fisher convergence problems
   phatb = tryCatch( {
-
-    # ~~ test only
-    #if ( rbinom( n = 1, size = 1, prob = 0.2 ) == 1 ) stop("Fake error")
 
     # meta-analyze the bootstrapped data
     mb = rma.uni( yi = b[[yi.name]],

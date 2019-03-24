@@ -53,6 +53,9 @@ such that if any bootstrap iterates fail (usually because of model estimation pr
 bootstrap iterate is simply discarded so that confidence interval estimation can proceed.
 }
 \examples{
+
+##### Example 1: BCG Vaccine and Tuberculosis Meta-Analysis #####
+
 # calculate effect sizes for example dataset
 d = metafor::escalc(measure="RR", ai=tpos, bi=tneg,
                    ci=cpos, di=cneg, data=metafor::dat.bcg)
@@ -95,7 +98,54 @@ prop_stronger( q = log(0.9),
               yi.name = "yi",
               vi.name = "vi" )
 }
+
+##### Example 2: Meta-Analysis of Multisite Replication Studies #####
+
+ # replication estimates (Fisher's z scale) and SEs
+ # from moral credential example in reference #2
+ r.fis = c(0.303, 0.078, 0.113, -0.055, 0.056, 0.073,
+ 0.263, 0.056, 0.002, -0.106, 0.09, 0.024, 0.069, 0.074,
+ 0.107, 0.01, -0.089, -0.187, 0.265, 0.076, 0.082)
+
+ r.SE = c(0.111, 0.092, 0.156, 0.106, 0.105, 0.057,
+ 0.091, 0.089, 0.081, 0.1, 0.093, 0.086, 0.076,
+ 0.094, 0.065, 0.087, 0.108, 0.114, 0.073, 0.105, 0.04)
+
+ d = data.frame( yi = r.fis,
+                 vi = r.SE^2 )
+
+ # meta-analyze the replications
+ m = metafor::rma.uni( yi = r.fis, vi = r.SE^2, measure = "ZCOR" )
+
+ # probability of true effect above r = 0.10 = 28\%
+ # convert threshold on r scale to Fisher's z
+ q = r_to_z(0.10)
+
+ # bootstrap reps should be higher in practice (e.g., 1000)
+ # here using only 100 for speed
+ prop_stronger( q = q,
+                M = m$b,
+                se.M = m$se,
+                t2 = m$tau2,
+                se.t2 = m$se.tau2,
+                tail = "above",
+                dat = d,
+                R = 250 )
+
+
+ # probability of true effect equally strong in opposite direction
+ q.star = r_to_z(-0.10)
+ prop_stronger( q = q.star,
+                M = m$b,
+                se.M = m$se,
+                t2 = m$tau2,
+                se.t2 = m$se.tau2,
+                tail = "below",
+                dat = d,
+                R = 250 )
 }
 \references{
-Mathur MB & VanderWeele TJ. New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine (2018).
+1. Mathur MB & VanderWeele TJ. New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine (2018).
+
+2. Mathur MB & VanderWeele TJ. New metrics for multisite replication projects. Under review.
 }
