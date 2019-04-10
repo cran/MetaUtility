@@ -7,7 +7,7 @@
 r_to_z(r)
 }
 \arguments{
-\item{r}{A Pearson's correlation}
+\item{r}{Pearson's correlation}
 }
 \description{
 Converts Pearson's r to Fisher's z for use in meta-analysis.

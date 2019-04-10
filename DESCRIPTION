@@ -1,7 +1,7 @@
 Package: MetaUtility
 Type: Package
 Title: Utility Functions for Conducting and Reporting Meta-Analysis
-Version: 1.1.0
+Version: 1.2.0
 Author: Maya B. Mathur, Tyler J. VanderWeele
 Maintainer: Maya B. Mathur <mmathur@stanford.edu>
 Description: Contains functions to estimate the proportion of effects stronger than a threshold
@@ -14,6 +14,6 @@ Imports: metafor, stats, stringr
 LazyData: true
 RoxygenNote: 6.1.1
 NeedsCompilation: no
-Packaged: 2019-03-24 12:08:49 UTC; mmathur
+Packaged: 2019-04-10 05:47:18 UTC; mmathur
 Repository: CRAN
-Date/Publication: 2019-03-24 12:36:36 UTC
+Date/Publication: 2019-04-10 09:05:21 UTC

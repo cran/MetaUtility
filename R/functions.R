@@ -1,5 +1,6 @@
 
 
+
 ################################ FNs: SCRAPING PUBLISHED META-ANALYSIS ################################
 
 
@@ -155,10 +156,89 @@ format_stat = Vectorize( function(x,
 
 
 
+
+
+################################ FNs: EFFECT SIZE CONVERSIONS ################################
+
+
+#' Convert Pearson's r to Cohen's d
+#'
+#' Converts Pearson's r (computed with a continuous X and Y) to Cohen's d
+#' for use in meta-analysis. The resulting Cohen's d represents the
+#' estimated increase in standardized Y that is associated with a delta-unit
+#' increase in X.
+#' @param r Pearson's correlation
+#' @param sx Sample standard deviation of X
+#' @param delta Contrast in X for which to compute Cohen's d, specified in raw units of X (not standard deviations).
+#' @param N Sample size used to estimate \code{r}
+#' @param Ns Sample size used to estimate \code{sx}, if different from \code{N}
+#' @param sx.known Is \code{sx} known rather than estimated? (By default, assumes \code{sx} is estimated, which will almost always be the case.)
+#' @details To preserve the sign of the effect size, the code takes the absolute value of \code{delta}. The standard error
+#' estimate assumes that X is approximately normal and that \code{N} is large.
+#' @references
+#' 1. Mathur MB & VanderWeele TJ. A simple, interpretable conversion from Pearson's correlation to Cohen's d for meta-analysis. Under revision.
+#' @export
+#' @examples
+#' # d for a 1-unit vs. a 2-unit increase in X
+#' r_to_d( r = 0.5,
+#'         sx = 2,
+#'         delta = 1,
+#'         N = 100 )
+#' r_to_d( r = 0.5,
+#'         sx = 2,
+#'         delta = 2,
+#'         N = 100 )
+#'
+#' # d when sx is estimated in the same vs. a smaller sample
+#' # point estimate will be the same, but inference will be a little
+#' # less precise in second case
+#' r_to_d( r = -0.3,
+#'          sx = 2,
+#'          delta = 2,
+#'          N = 300,
+#'          Ns = 300 )
+#'
+#' r_to_d( r = -0.3,
+#'         sx = 2,
+#'         delta = 2,
+#'         N = 300,
+#'         Ns = 30 )
+
+r_to_d =
+  function(r, sx, delta, N = NA, Ns = N, sx.known = FALSE )  {
+
+    # delta should always be positive regardless of sign of d
+    delta = abs(delta)
+
+    # point estimate
+    d = (delta * r) / ( sx * sqrt(1-r^2) )
+
+    # standard error and CI
+    if ( !is.na(N) ) {
+      term1 = 1 / ( r^2 * ( N - 3) )
+      term2 = 1 / ( 2 * (Ns - 1) )
+      if (sx.known == TRUE) term2 = 0
+      se = abs(d) * sqrt( term1 + term2 )
+
+      d.lo = d - qnorm(.975) * se
+      d.hi = d + qnorm(.975) * se
+    } else {
+      se = NA
+      d.lo = NA
+      d.hi = NA
+    }
+
+    return( data.frame( d=d, se=se, lo=d.lo, hi=d.hi ) )
+  }
+
+
+
+
+
 #' Convert Pearson's r to Fisher's z
 #'
 #' Converts Pearson's r to Fisher's z for use in meta-analysis.
-#' @param r A Pearson's correlation
+#' @param r Pearson's correlation
 #' @export
 #' @examples
 #' # convert a Pearson correlation of -0.8 to Fisher's z
@@ -174,7 +254,7 @@ r_to_z = Vectorize( function(r) {
 #' Convert Fisher's z to Pearson's r
 #'
 #' Converts Fisher's z to Pearson's r for use in meta-analysis.
-#' @param z A Fisher's z
+#' @param z Fisher's z
 #' @export
 #' @examples
 #' # convert Fisher's z of 1.1 to Pearson's r
@@ -182,6 +262,11 @@ r_to_z = Vectorize( function(r) {
 z_to_r = Vectorize( function(z) {
   ( exp( 2 * z ) - 1 ) / ( exp( 2 * z ) + 1 )
 }, vectorize.args = "z" )
+
+
+
+
+################################ FNs: MISC ################################
 
 
 #' Return confidence interval for tau for a meta-analysis

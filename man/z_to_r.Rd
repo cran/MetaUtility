@@ -7,7 +7,7 @@
 z_to_r(z)
 }
 \arguments{
-\item{z}{A Fisher's z}
+\item{z}{Fisher's z}
 }
 \description{
 Converts Fisher's z to Pearson's r for use in meta-analysis.
