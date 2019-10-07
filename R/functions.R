@@ -1,6 +1,4 @@
 
-
-
 ################################ FNs: SCRAPING PUBLISHED META-ANALYSIS ################################
 
 
@@ -28,8 +26,6 @@
 
 # assumes a comma before the upper limit
 # everything before first bracket treated as point estimate
-
-
 parse_CI_string = function( string, sep = "," ) {
 
   # standardize the CI brackets
@@ -176,7 +172,7 @@ format_stat = Vectorize( function(x,
 #' @details To preserve the sign of the effect size, the code takes the absolute value of \code{delta}. The standard error
 #' estimate assumes that X is approximately normal and that \code{N} is large.
 #' @references
-#' 1. Mathur MB & VanderWeele TJ. A simple, interpretable conversion from Pearson's correlation to Cohen's d for meta-analysis. Under revision.
+#' 1. Mathur MB & VanderWeele TJ (2019). A simple, interpretable conversion from Pearson's correlation to Cohen's d for meta-analysis. Epidemiology.
 #' @export
 #' @examples
 #' # d for a 1-unit vs. a 2-unit increase in X
@@ -219,6 +215,12 @@ r_to_d =
       term2 = 1 / ( 2 * (Ns - 1) )
       if (sx.known == TRUE) term2 = 0
       se = abs(d) * sqrt( term1 + term2 )
+
+      # handle case where r = 0 exactly using the limit
+      # see saved file "Limit as r -> 0"
+      if ( r == 0 ) {
+        se = (1/sx) * delta * sqrt(1 / (N-3))
+      }
 
       d.lo = d - qnorm(.975) * se
       d.hi = d + qnorm(.975) * se
@@ -293,7 +295,6 @@ z_to_r = Vectorize( function(z) {
 #'
 #' # for nicer formatting
 #' format_CI( tau_CI(m)[1], tau_CI(m)[2] )
-
 tau_CI = function( meta,
                    CI.level = 0.95 ) {
 
@@ -312,28 +313,245 @@ tau_CI = function( meta,
 }
 
 
+################################ FN: CALIBRATED ESTIMATES ################################
+
+#' Return calibrated estimates of studies' true effect sizes
+#'
+#' Returns estimates of the true effect in each study based on the methods of Wang & Lee (2019).
+#' Unlike the point estimates themselves, these "calibrated" estimates have been
+#' appropriately shrunk to correct the overdispersion that arises due to the studies' finite sample sizes.
+#' By default, this function uses Dersimonian-Laird moments-based estimates of the mean and variance of the true
+#' effects, as Wang & Lee (2019) recommended.
+#' @param yi Vector of study-level point estimates
+#' @param sei Vector of study-level standard errors
+#' @param method Estimation method for mean and variance of true effects (passed to \code{metafor::rma.uni})
+#' @export
+#' @import
+#' metafor
+#' stats
+#' @references
+#' 1. Wang C-C & Lee W-C (2019). A simple method to estimate prediction intervals and
+#' predictive distributions: Summarizing meta-analyses
+#' beyond means and confidence intervals. Research Synthesis Methods.
+#' @examples
+#' d = metafor::escalc(measure="RR", ai=tpos, bi=tneg,
+#'                      ci=cpos, di=cneg, data=metafor::dat.bcg)
+#'
+#' # calculate calibrated estimates
+#' d$calib = calib_ests( yi = d$yi,
+#'                       sei = sqrt(d$vi) )
+#'
+#' # look at 5 studies with the largest calibrated estimates
+#' d = d[ order(d$calib, decreasing = TRUE), ]
+#' d$trial[1:5]
+#'
+#' # look at kernel density estimate of calibrated estimates
+#' plot(density(d$calib))
+
+calib_ests = function(yi,
+                      sei,
+                      method = "DL") {
+
+  meta = rma.uni( yi = yi,
+                  sei = sei,
+                  method = method )
+
+  muhat = meta$b
+  t2 = meta$tau2
+
+  # return ensemble estimates
+  as.numeric( c(muhat) + ( c(t2) / ( c(t2) + sei^2 ) )^(1/2) * ( yi - c(muhat) ) )
+}
+
+
+################################ INTERNAL FNs FOR SIGN TEST METHODT ################################
+
+# documentation from Rui Wang paper
+##########################################################################
+##########################################################################
+### theta: treatment effect estimates ###
+### (usually a vector of length K, K is the number of studies) ###
+### theta.sd: estimated standard error of theta ###
+### (usually a vector of same length as theta) ###
+### mu: the specified value in the null hypothesis. ###
+### pct: the percentile of interest ###
+### 0.5=median, ###
+### 0.25=25th percentile, ###
+### 0.75=75th percentile. ###
+### nperm: number of realizations in the conditional test ###
+
+##########################################################################
+### Output a 2-sided p-value. ###
+##########################################################################
+
+
+#' Return sign test p-value for meta-analysis percentile
+#'
+#' Returns a p-value for testing the hypothesis that \code{mu} is the \code{pct}^th
+#' percentile of the true effect distribution based on the nonparametric sign test
+#' method of Wang et al. (2010). This function is also called by \code{prop_stronger}
+#' when using the sign test method.
+#' @param yi Vector of study-level point estimates
+#' @param sei Vector of study-level standard errors
+#' @param mu The effect size to test as the \code{pct}^th percentile
+#' @param pct The percentile of interest (e.g., 0.50 for the median)
+#' @param R Number of simulation iterates to use when estimating null distribution of the test statistic.
+#' @export
+#' @references
+#' 1. Wang R, Tian L, Cai T, & Wei LJ (2010). Nonparametric inference procedure for percentiles
+#' of the random effects distribution in meta-analysis. Annals of Applied Statistics.
+#' @examples
+#' # calculate effect sizes for example dataset
+#' d = metafor::escalc(measure="RR", ai=tpos, bi=tneg,
+#'                    ci=cpos, di=cneg, data=metafor::dat.bcg)
+#'
+#' # test H0: the median is -0.3
+#' # using only R = 100 for speed, but should be much larger (e.g., 2000) in practice
+#' pct_pval( yi = d$yi,
+#'           sei = sqrt(d$vi),
+#'           mu = -0.3,
+#'           pct = 0.5,
+#'           R = 100 )
+
+pct_pval <- function(yi,
+                sei,
+                mu,
+                pct,
+                R=2000) {
+
+  K<-length(yi)
+
+  # "score" is equivalent to kth contribution of sum in
+  #  first eq. on page 4 (see my note in sidebar for equivalence)
+  score <- pnorm( (mu-yi)/sei ) - 0.5
+  # OBSERVED test stat
+  stat<-sum(score)
+
+  # initialize what will be the test stat vector UNDER H0
+  # i.e., Tstar in paper
+  test.stat<-rep(0,R)
+
+  # draw Deltas for R iterations
+  # this is the H0 distribution
+  i<-1
+  while (i<=R) {
+    # here they use "ref1" and "ref2" (0/1) instead of Delta (1/-1)
+    #  for computational convenience
+    ref1 <- rbinom(K,1,pct)
+    ref2 <- 1-ref1
+    # this is the second eq. on page 4 of paper
+    test.stat[i] <- sum( (abs(score)) * ref1 - (abs(score))*ref2 )
+    i<-i+1
+  }
+
+  # compare test.stat (which is under H0) to observed one
+  p1 <- mean(as.numeric(test.stat<=stat))
+  p2 <- mean(as.numeric(test.stat>=stat))
+  p3 <- mean(as.numeric(test.stat==stat))
+  pval <- 2*min(p1,p2) - p3
+  return(pval)
+}
+
+
+#' Return sign test point estimate of proportion of effects above or below threshold.
+#'
+#' Internal function not intended for user to call. Uses an extension of the sign test method of Wang et al. (2010) to estimate the proportion of true (i.e., population parameter) effect sizes in a meta-analysis
+#' that are above or below a specified threshold of scientific importance.
+#' @param q True effect size that is the threshold for "scientific importance"
+#' @param yi Study-level point estimates
+#' @param vi study-level variances
+#' @param CI.level Confidence level as a proportion
+#' @param tail \code{above} for the proportion of effects above \code{q}; \code{below} for
+#' the proportion of effects below \code{q}.
+#' @param R Number of simulation iterates to estimate null distribution of sign test statistic
+#' @param return.vectors Should all percents and p-values from the grid search be returned?
+#' @import
+#' purrr
+#' @importFrom
+#' dplyr "%>%"
+#' @references
+#' 1. Wang R, Tian L, Cai T, & Wei LJ (2010). Nonparametric inference procedure for percentiles
+#' of the random effects distribution in meta-analysis. Annals of Applied Statistics.
+prop_stronger_sign = function(q,
+                            yi,
+                            vi,
+                            CI.level = 0.95,
+                            tail = NA,
+                            R = 2000,
+                            return.vectors = FALSE ) {
+
+
+  # Phat values to try
+  pct.vec = seq( 0, 1, 0.001 )
+
+  pvals = pct.vec %>% map( function(x) pct_pval( yi = yi,
+                                            sei = sqrt(vi),
+                                            mu = q,
+                                            pct = x,
+                                            R = R ) ) %>%
+    unlist # return a double-type vector instead of list
+
+  # point estimate: the value of Phat.below with the largest p-value?
+  Phat.below.NP = pct.vec[ which.max( pvals ) ]
+
+  # get CI limits
+  alpha = 1 - CI.level
+  # in case the point estimate is already 1 or 0, avoid null objects
+  if ( Phat.below.NP == 1 ) CI.hi.NP = 1
+  # of the "candidate" Phat values for *upper* CI (i.e., those *above* the one with largest p-value),
+  #  which has p-value closest to 0.05?
+  else CI.hi.NP = pct.vec[ pct.vec > Phat.below.NP ][ which.min( abs( pvals[ pct.vec > Phat.below.NP ] - alpha ) ) ]
+
+  if ( Phat.below.NP == 0 ) CI.lo.NP = 0
+  else CI.lo.NP = pct.vec[ pct.vec < Phat.below.NP ][ which.min( abs( pvals[ pct.vec < Phat.below.NP ] - alpha ) ) ]
+
+  # if user wanted the lower tail
+  if ( tail == "below" ) {
+    res = data.frame(Est = Phat.below.NP,
+                     lo = CI.lo.NP,
+                     hi = CI.hi.NP )
+    pcts = pct.vec
+  }
+
+  # if user wanted the upper tail, reverse everything
+  if ( tail == "above" ) {
+    res = data.frame( Est = 1 - Phat.below.NP,
+                      lo = 1 - CI.hi.NP,
+                      hi = 1 - CI.lo.NP )
+    pcts = 1 - pct.vec
+  }
+
+  if ( return.vectors == FALSE ) return(res)
+  if ( return.vectors == TRUE ) invisible( list(res = res,
+                                                pcts = pcts,
+                                                pvals = pvals) )
+}
+
 
 ################################ FN: COMPUTE PROPORTION OF EFFECTS STRONGER THAN THRESHOLD ################################
 
 #' Estimate proportion of true effect sizes above or below a threshold
 #'
 #' Estimates the proportion of true (i.e., population parameter) effect sizes in a meta-analysis
-#' that are above or below a specified threshold of scientific importance.
+#' that are above or below a specified threshold of scientific importance based on the methods of Mathur & VanderWeele (2018) and Mathur & VanderWeele (under review).
 #' @param q True effect size that is the threshold for "scientific importance"
-#' @param M Pooled point estimate from meta-analysis
-#' @param t2 Estimated heterogeneity (tau^2) from meta-analysis
-#' @param se.M Estimated standard error of pooled point estimate from meta-analysis
-#' @param se.t2 Estimated standard error of tau^2 from meta-analysis
-#' @param CI.level Confidence level as a proportion
-#' @param tail \code{above} for the proportion of effects above \code{q}; \code{below} for
+#' @param M Pooled point estimate from meta-analysis (required only for parametric estimation/inference and for Shapiro p-value)
+#' @param t2 Estimated heterogeneity (tau^2) from meta-analysis (required only for parametric estimation/inference and for Shapiro p-value)
+#' @param se.M Estimated standard error of pooled point estimate from meta-analysis (required only for parametric inference)
+#' @param se.t2 Estimated standard error of tau^2 from meta-analysis (required only for parametric inference)
+#' @param CI.level Confidence level as a proportion (e.g., 0.95 for a 95\% confidence interval)
+#' @param tail \code{"above"} for the proportion of effects above \code{q}; \code{"below"} for
 #' the proportion of effects below \code{q}.
+#' @param estimate.method Method for point estimation of the proportion (\code{"parametric"} or \code{"calibrated"}). See Details.
+#' @param ci.method Method for confidence interval estimation (\code{"parametric"}, \code{"calibrated"}, or \code{"sign.test"}). See Details.
+#' @param calib.est.method Method for estimating the mean and variance of the true effects when computing calibrated estimates. See Details.
 #' @param dat Dataset of point estimates (with names equal to the passed \code{yi.name}) and their variances
-#' (with names equal to the passed \code{vi.name}). Only required when bootstrapping.
-#' @param R Number of bootstrap iterates. Only required when bootstrapping.
-#' @param bootstrap If equal to \code{ifneeded}, bootstraps if estimated proportion is less than 0.15 or more than
-#' 0.85. If equal to \code{never}, instead does not return inference in the above edge cases. Only required when bootstrapping.
-#' @param yi.name Name of the variable in \code{dat} containing the study-level point estimates. Only required when bootstrapping.
-#' @param vi.name Name of the variable in \code{dat} containing the study-level variances. Only required when bootstrapping.
+#' (with names equal to the passed \code{vi.name}). Not required if using \code{ci.method = "parametric"} and bootstrapping is not needed.
+#' @param R Number of bootstrap or simulation iterates (depending on the methods chosen). Not required if using \code{ci.method = "parametric"} and bootstrapping is not needed.
+#' @param bootstrap Only used when \code{ci.method = "parametric"}. In that case, if \code{bootstrap = "ifneeded"}, bootstraps if estimated proportion is less than 0.15 or more than
+#' 0.85. If equal to \code{never}, instead does not return inference in the above edge cases.
+#' @param yi.name Name of the variable in \code{dat} containing the study-level point estimates. Used for bootstrapping and conducting Shapiro test.
+#' @param vi.name Name of the variable in \code{dat} containing the study-level variances. Used for bootstrapping and conducting Shapiro test.
 #' @export
 #' @import
 #' metafor
@@ -342,126 +560,158 @@ tau_CI = function( meta,
 #' Returns a dataframe containing the point estimate for the proportion, its estimated standard error, and confidence
 #' interval limits.
 #' @details
-#' When the estimated proportion is less than 0.15 or more than 0.85, it is best to bootstrap the confidence interval
+#' These methods perform well only in meta-analyses with at least 10 studies; we do not recommend reporting them in smaller
+#' meta-analyses. By default, \code{prop_stronger} uses parametric estimation for the proportion of effects above or below the chosen threshold.
+#' However, it is usually preferable to use the calibrated method for both point estimation and confidence interval estimation.
+#' The parametric method is maintained as the default for reverse-compatibility.
+#'
+#' The parametric method assumes that the true effects are approximately normal and that the number of studies is large.
+#' When using the parametric method and the estimated proportion is less than 0.15 or more than 0.85, it is best to bootstrap the confidence interval
 #' using the bias-corrected and accelerated (BCa) method (Mathur & VanderWeele, 2018); this is the default behavior of \code{prop_stronger}.
 #' Sometimes BCa confidence interval estimation fails, in which case \code{prop_stronger} instead uses the percentile method,
 #' issuing a warning if this is the case. We use a modified "safe" version of the \code{boot} package code for bootstrapping
 #' such that if any bootstrap iterates fail (usually because of model estimation problems), the error message is printed but the
 #' bootstrap iterate is simply discarded so that confidence interval estimation can proceed.
+#'
+#' The preferred calibrated method is an extension of work by Wang et al. (2019). This method makes no assumptions about the distribution of true effects and performs well in meta-analyses with
+#' as few as 10 studies. Calculating the calibrated estimates involves first estimating the meta-analytic mean and variance,
+#' which is by default done using the moments-based Dersimonian-Laird estimator as in Wang et al. (2019). To use a different method, which will be passed
+#' change the argument \code{calib.est.method} based on the documentation for to \code{metafor::rma.uni}'s \code{method} argument. For inference, the calibrated method may
+#' fail to converge especially for small meta-analyses for which the threshold is
+#' distant from the mean of the true effects. In these cases, it is sometimes reasonable to use the sign test method, described below.
+#'
+#' The sign test method is an extension of work by Wang et al. (2010). This method is recommended only when BCa inference from the calibrated method fails to converge. In this case, if the relative heterogeneity I^2 is moderate
+#' or high (I^2 > 0.5) and the point estimates appear reasonably symmetric and unimodal, the sign test method provides reliable inference.
 #' @references
-#' 1. Mathur MB & VanderWeele TJ. New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine (2018).
+#' 1. Mathur MB & VanderWeele TJ (2018). New metrics for meta-analyses of heterogeneous effects. Statistics in Medicine.
 #'
-#' 2. Mathur MB & VanderWeele TJ. New metrics for multisite replication projects. Under review.
+#' 2. Mathur MB & VanderWeele TJ (under review). Robust metrics for meta-analyses of heterogeneous effects: methods and software.
+#'
+#' 3. Wang R, Tian L, Cai T, & Wei LJ (2010). Nonparametric inference procedure for percentiles
+#' of the random effects distribution in meta-analysis. Annals of Applied Statistics.
+#'
+#' 4. Wang C-C & Lee W-C (2019). A simple method to estimate prediction intervals and
+#' predictive distributions: Summarizing meta-analyses
+#' beyond means and confidence intervals. Research Synthesis Methods.
+#'
+#' 5. Mathur MB & VanderWeele TJ (under review). New metrics for multisite replication projects.
 #' @examples
-#'
 #' ##### Example 1: BCG Vaccine and Tuberculosis Meta-Analysis #####
 #'
 #' # calculate effect sizes for example dataset
 #' d = metafor::escalc(measure="RR", ai=tpos, bi=tneg,
-#'                    ci=cpos, di=cneg, data=metafor::dat.bcg)
+#'                     ci=cpos, di=cneg, data=metafor::dat.bcg)
 #'
 #' # fit random-effects model
 #' # note that metafor package returns on the log scale
 #' m = metafor::rma.uni(yi= d$yi, vi=d$vi, knha=TRUE,
-#' measure="RR", method="REML" )
+#'                      measure="RR", method="REML" )
 #'
 #' # pooled point estimate (RR scale)
 #' exp(m$b)
 #'
-#' # estimate the proportion of effects stronger than RR = 0.80
-#' # no bootstrapping will be needed
-#' prop_stronger( q = log(0.8),
+#' # estimate the proportion of effects stronger than RR = 0.70
+#' # as recommended, use the calibrated approach for both point estimation and CI
+#' # bootstrap reps should be higher in practice (e.g., 1000)
+#' # here using fewer for speed
+#' prop_stronger( q = log(0.7),
+#'                tail = "below",
+#'                estimate.method = "calibrated",
+#'                ci.method = "calibrated",
+#'                dat = d,
+#'                yi.name = "yi",
+#'                vi.name = "vi",
+#'                R = 100)
+#' # warning goes away with more bootstrap iterates
+#' # no Shapiro p-value because we haven't provided the dataset and its variable names
+#'
+#' # now use the parametric approach (Mathur & VanderWeele 2018)
+#' # no bootstrapping will be needed for this choice of q
+#' prop_stronger( q = log(0.7),
 #'                M = as.numeric(m$b),
 #'                t2 = m$tau2,
 #'                se.M = as.numeric(m$vb),
 #'                se.t2 = m$se.tau2,
 #'                CI.level = 0.95,
-#'               tail = "below",
-#'               bootstrap = "ifneeded")
+#'                tail = "below",
+#'                bootstrap = "ifneeded")
 #'
-#' \dontrun{
-#' # now try a more extreme threshold, q, such that the function will use bootstrapping
-#' # now we will need to pass the final 4 arguments as well
-#' prop_stronger( q = log(0.9),
-#'                M = as.numeric(m$b),
-#'               t2 = m$tau2,
-#'               se.M = as.numeric(m$vb),
-#'               se.t2 = m$se.tau2,
-#'               CI.level = 0.95,
-#'               tail = "below",
-#'
-#'               # below arguments control bootstrapping
-#'               # only 100 iterates for demo purposes (should be higher in practice)
-#'               dat = d,
-#'               R = 100,
-#'               bootstrap = "ifneeded",
-#'               yi.name = "yi",
-#'               vi.name = "vi" )
-#' }
 #'
 #' ##### Example 2: Meta-Analysis of Multisite Replication Studies #####
 #'
-#'  # replication estimates (Fisher's z scale) and SEs
-#'  # from moral credential example in reference #2
-#'  r.fis = c(0.303, 0.078, 0.113, -0.055, 0.056, 0.073,
-#'  0.263, 0.056, 0.002, -0.106, 0.09, 0.024, 0.069, 0.074,
-#'  0.107, 0.01, -0.089, -0.187, 0.265, 0.076, 0.082)
+#' # replication estimates (Fisher's z scale) and SEs
+#' # from moral credential example in reference #2
+#' r.fis = c(0.303, 0.078, 0.113, -0.055, 0.056, 0.073,
+#'           0.263, 0.056, 0.002, -0.106, 0.09, 0.024, 0.069, 0.074,
+#'           0.107, 0.01, -0.089, -0.187, 0.265, 0.076, 0.082)
 #'
-#'  r.SE = c(0.111, 0.092, 0.156, 0.106, 0.105, 0.057,
-#'  0.091, 0.089, 0.081, 0.1, 0.093, 0.086, 0.076,
-#'  0.094, 0.065, 0.087, 0.108, 0.114, 0.073, 0.105, 0.04)
+#' r.SE = c(0.111, 0.092, 0.156, 0.106, 0.105, 0.057,
+#'          0.091, 0.089, 0.081, 0.1, 0.093, 0.086, 0.076,
+#'          0.094, 0.065, 0.087, 0.108, 0.114, 0.073, 0.105, 0.04)
 #'
-#'  d = data.frame( yi = r.fis,
-#'                  vi = r.SE^2 )
+#' d = data.frame( yi = r.fis,
+#'                 vi = r.SE^2 )
 #'
-#'  # meta-analyze the replications
-#'  m = metafor::rma.uni( yi = r.fis, vi = r.SE^2, measure = "ZCOR" )
+#' # meta-analyze the replications
+#' m = metafor::rma.uni( yi = r.fis, vi = r.SE^2, measure = "ZCOR" )
 #'
-#'  # probability of true effect above r = 0.10 = 28%
-#'  # convert threshold on r scale to Fisher's z
-#'  q = r_to_z(0.10)
+#' # probability of true effect above r = 0.10 = 28%
+#' # convert threshold on r scale to Fisher's z
+#' q = r_to_z(0.10)
 #'
-#'  # bootstrap reps should be higher in practice (e.g., 1000)
-#'  # here using only 100 for speed
-#'  prop_stronger( q = q,
-#'                 M = m$b,
-#'                 se.M = m$se,
-#'                 t2 = m$tau2,
-#'                 se.t2 = m$se.tau2,
-#'                 tail = "above",
-#'                 dat = d,
-#'                 R = 250 )
+#' # bootstrap reps should be higher in practice (e.g., 1000)
+#' # here using only 100 for speed
+#' prop_stronger( q = q,
+#'                tail = "above",
+#'                estimate.method = "calibrated",
+#'                ci.method = "calibrated",
+#'                dat = d,
+#'                yi.name = "yi",
+#'                vi.name = "vi",
+#'                R = 100 )
 #'
 #'
-#'  # probability of true effect equally strong in opposite direction
-#'  q.star = r_to_z(-0.10)
-#'  prop_stronger( q = q.star,
-#'                 M = m$b,
-#'                 se.M = m$se,
-#'                 t2 = m$tau2,
-#'                 se.t2 = m$se.tau2,
-#'                 tail = "below",
-#'                 dat = d,
-#'                 R = 250 )
+#' # probability of true effect equally strong in opposite direction
+#' q.star = r_to_z(-0.10)
+#' prop_stronger( q = q.star,
+#'                tail = "below",
+#'                estimate.method = "calibrated",
+#'                ci.method = "calibrated",
+#'                dat = d,
+#'                yi.name = "yi",
+#'                vi.name = "vi",
+#'                R = 100 )
+#' # BCa fails to converge here
+
 
 prop_stronger = function( q,
-                          M,
-                          t2,
+                          M = NA,
+                          t2 = NA,
                           se.M = NA,
                           se.t2 = NA,
                           CI.level = 0.95,
                           tail = NA,
 
-                          # below arguments only needed for bootstrapping
+                          estimate.method = "parametric",  # "parametric" or "calibrated"
+                          ci.method = "parametric", # "parametric", "calibrated", or "sign.test"
+                          calib.est.method = "DL",  # will be passed to rma.uni
+
+                          # below arguments only needed for bootstrapping with parametric method
                           dat = NULL,
                           R = 2000,
-                          bootstrap = "ifneeded",
+                          bootstrap = "ifneeded",  # "ifneeded" or "never"
                           yi.name = "yi",
                           vi.name = "vi" ) {
 
 
   ##### Check for Bad Input #####
-  if ( t2 < 0 ) stop("Heterogeneity cannot be negative")
+
+  if ( ( estimate.method == "parametric" | ci.method == "parametric" ) &
+       ( is.na(t2) | is.na(M) ) ) {
+    stop("Must provide M and t2 if using estimate.method = 'parametric' or ci.method = 'parametric'.")
+  }
+
+  if ( !is.na(t2) & t2 < 0 ) stop("Heterogeneity cannot be negative")
 
   if ( ! is.na(se.M) ) {
     if (se.M < 0) stop("se.M cannot be negative")
@@ -471,110 +721,211 @@ prop_stronger = function( q,
     if (se.t2 < 0) stop("se.t2 cannot be negative")
   }
 
+  if ( !estimate.method %in% c( "parametric", "calibrated" ) ) {
+    stop("Invalid estimate.method argument")
+  }
+
+  if ( !ci.method %in% c( "parametric", "calibrated", "sign.test" ) ) {
+    stop("Invalid ci.method argument")
+  }
+
   if ( !bootstrap %in% c( "ifneeded", "never" ) ) {
     stop("Invalid bootstrap argument")
   }
 
-  ##### Messages When Not All Output Can Be Computed #####
-  if ( is.na(se.M) | is.na(se.t2) ) message("Cannot compute inference without se.M and \nse.t2.\n Returning only point estimates.")
-
-
-  ##### Point Estimates #####
-  # same regardless of tail
-  Z = (q - M) / sqrt(t2)
-
-  if ( tail == "above" ) phat = 1 - pnorm(Z)
-  else if ( tail == "below" ) phat = pnorm(Z)
-
-  # is point estimate extreme enough to require bootstrap?
-  extreme = (phat < 0.15 | phat > 0.85)
-
-  if ( extreme ) {
-    if ( bootstrap == "ifneeded" ) {
-      message("The estimated proportion is close to 0 or 1,\n so the theoretical CI may perform poorly. Using \n bootstrapping instead.")
-
-      # more sanity checks
-      if ( is.null(dat) ) stop("Must provide dat in order to bootstrap.")
-      if ( !yi.name %in% names(dat) ) stop("dat must contain variable called yi.name.")
-      if ( !vi.name %in% names(dat) ) stop("dat must contain variable called vi.name.")
-
-      # bookmark
-      bootCIs = lo = hi = SE = NULL
-
-      # bookmark
-      boot.res = suppressWarnings( safe_boot( data = dat,
-                                              parallel = "multicore",
-                                              R = R,
-                                              statistic = get_stat,
-                                              # below arguments are being passed to get_stat
-                                              q = q,
-                                              tail = tail,
-                                              yi.name = yi.name,
-                                              vi.name = vi.name ) )
-
-      # if BCa fails (due to infinite w adjustment issue), use percentile instead
-      boot.values = tryCatch( {
-
-        bootCIs = boot.ci(boot.res,
-                          type="bca",
-                          conf = CI.level )
-        lo = round( bootCIs$bca[4], 2 )
-        hi = round( bootCIs$bca[5], 2 )
-        SE = sd(boot.res$t)
-
-        c(lo, hi, SE)
-
-      }, error = function(err) {
-        warning("Had problems computing BCa CI. Using percentile method instead.")
-
-        bootCIs = boot.ci(boot.res,
-                        type="perc",
-                        conf = CI.level )
-
-        lo = round( bootCIs$perc[4], 2 )
-
-        hi = round( bootCIs$perc[5], 2 )
-
-        SE = sd(boot.res$t)
-        c(lo, hi, SE)
-      }
-      )
-
-      lo = boot.values[1]
-      hi = boot.values[2]
-      SE = boot.values[3]
-
-    } # end loop for boot == "ifneeded"
-
-    if ( bootstrap == "never" ) {
-      warning("The estimated proportion is close to 0 or 1,\n so the theoretical CI may perform poorly. Should use \nBCa bootstrapping instead.")
-      SE = lo = hi = NA
-    }
+  if ( ci.method == "parametric" & estimate.method != "parametric"){
+    stop("\nError: You chose ci.method = 'parametric' (or you used the default),\nin which case you must use estimate.method = 'parametric' as well.\n")
   }
 
+  ##### Messages When Not All Output Can Be Computed #####
 
-  if ( !extreme ) {
-    # do inference only if given needed SEs
-    if ( !is.na(se.M) & !is.na(se.t2) ){
+  if ( ci.method == "parametric" & ( is.na(se.M) | is.na(se.t2) ) ) message("Cannot compute parametric inference without se.M and \nse.t2.\n Returning only point estimates.\n")
+  if ( is.null(dat) | is.na(M) | is.na(t2) ) message("Cannot report Shapiro normality test without dat, M, and t2.\n Returning NA for Shapiro p-value.\n")
 
-      ##### Delta Method Inference on Original Scale #####
-      term1.1 = se.M^2 / t2
-      term1.2 = ( se.t2^2 * ( q - M )^2 ) / ( 4 * t2^3 )
-      term1 = sqrt( term1.1 + term1.2 )
+  if ( ( estimate.method == "calibrated" | ci.method == "calibrated" ) &
+       is.null(dat) ) stop("Cannot use calibrated methods without providing dat.")
 
-      SE = term1 * dnorm(Z)
+  ##### Get Point Estimate #####
 
-      # confidence interval
-      tail.prob = ( 1 - CI.level ) / 2
-      lo = max( 0, phat + qnorm( tail.prob )*SE )
-      hi = min( 1, phat - qnorm( tail.prob )*SE )
-    } else {
-      SE = lo = hi = NA
+  if ( estimate.method == "parametric" ) {
+
+    # same regardless of tail
+    Z = (q - M) / sqrt(t2)
+
+    if ( tail == "above" ) phat = 1 - pnorm(Z)
+    else if ( tail == "below" ) phat = pnorm(Z)
+  }
+
+  if ( estimate.method == "calibrated" ) {
+    # use DL method by default
+    calib = calib_ests( yi = dat[[yi.name]],
+                      sei = sqrt(dat[[vi.name]]),
+                      calib.est.method )
+
+    if ( tail == "above" ) phat = sum(calib > c(q)) / length(calib)
+    if ( tail == "below" ) phat = sum(calib < c(q)) / length(calib)
+  }
+
+  ##### Inference #####
+  if ( ci.method == "parametric") {
+
+    warning("Warning: You chose ci.method = 'parametric' (or you used the default).\nIt is almost always better to use ci.method = 'calibrated'.\n")
+
+    # is point estimate extreme enough to require bootstrap?
+    extreme = (phat < 0.15 | phat > 0.85)
+
+    if ( extreme ) {
+      if ( bootstrap == "ifneeded" ) {
+        message("The estimated proportion is close to 0 or 1,\n so the theoretical CI may perform poorly. Using \n bootstrapping instead.\n")
+
+        # more sanity checks
+        if ( is.null(dat) ) stop("Must provide dat in order to bootstrap.")
+        if ( !yi.name %in% names(dat) ) stop("dat must contain variable called yi.name.")
+        if ( !vi.name %in% names(dat) ) stop("dat must contain variable called vi.name.")
+
+        bootCIs = lo = hi = SE = NULL
+
+        boot.res = suppressWarnings( safe_boot( data = dat,
+                                                parallel = "multicore",
+                                                R = R,
+                                                statistic = get_stat,
+                                                # below arguments are being passed to get_stat
+                                                q = q,
+                                                tail = tail,
+                                                yi.name = yi.name,
+                                                vi.name = vi.name ) )
+
+        # if BCa fails (due to infinite w adjustment issue), use percentile instead
+        boot.values = tryCatch( {
+
+          bootCIs = boot.ci(boot.res,
+                            type="bca",
+                            conf = CI.level )
+          lo = round( bootCIs$bca[4], 2 )
+          hi = round( bootCIs$bca[5], 2 )
+          SE = sd(boot.res$t)
+
+          c(lo, hi, SE)
+
+        }, error = function(err) {
+          warning("Had problems computing BCa CI. Using percentile method instead.")
+
+          bootCIs = boot.ci(boot.res,
+                            type="perc",
+                            conf = CI.level )
+
+          lo = round( bootCIs$perc[4], 2 )
+
+          hi = round( bootCIs$perc[5], 2 )
+
+          SE = sd(boot.res$t)
+          c(lo, hi, SE)
+        }
+        )
+
+        lo = boot.values[1]
+        hi = boot.values[2]
+        SE = boot.values[3]
+
+      } # end loop for boot == "ifneeded"
+
+      if ( bootstrap == "never" ) {
+        warning("The estimated proportion is close to 0 or 1,\n so the theoretical CI may perform poorly. Should use \nBCa bootstrapping instead.")
+        SE = lo = hi = NA
+      }
     }
+
+
+    if ( !extreme ) {
+      # do inference only if given needed SEs
+      if ( !is.na(se.M) & !is.na(se.t2) ){
+
+        ##### Delta Method Inference on Original Scale #####
+        term1.1 = se.M^2 / t2
+        term1.2 = ( se.t2^2 * ( q - M )^2 ) / ( 4 * t2^3 )
+        term1 = sqrt( term1.1 + term1.2 )
+
+        SE = term1 * dnorm(Z)
+
+        # confidence interval
+        tail.prob = ( 1 - CI.level ) / 2
+        lo = max( 0, phat + qnorm( tail.prob )*SE )
+        hi = min( 1, phat - qnorm( tail.prob )*SE )
+      } else {
+        SE = lo = hi = NA
+      }
+    }
+
+  } # end ci.method == "parametric"
+
+  if ( ci.method == "calibrated") {
+
+        # more sanity checks
+        if ( is.null(dat) ) stop("Must provide dat in order to use ci.method = 'calibrated'.")
+        if ( !yi.name %in% names(dat) ) stop("dat must contain variable called yi.name.")
+        if ( !vi.name %in% names(dat) ) stop("dat must contain variable called vi.name.")
+
+        bootCIs = lo = hi = SE = NULL
+
+        boot.res = suppressWarnings( safe_boot( data = dat,
+                                                parallel = "multicore",
+                                                R = R,
+                                                statistic = function(original, indices) {
+
+                                                  b = original[indices,]
+
+                                                  calib.b = calib_ests( yi = b[[yi.name]],
+                                                                        sei = sqrt(b[[vi.name]]),
+                                                                        calib.est.method)
+
+                                                  if ( tail == "above" ) phatb = sum(calib.b > c(q)) / length(calib.b)
+                                                  if ( tail == "below" ) phatb = sum(calib.b < c(q)) / length(calib.b)
+                                                  return(phatb)
+                                                } ) )
+
+        # catch BCa failures (usually due to infinite w adjustment issue)
+        boot.values = tryCatch( {
+
+          bootCIs = boot.ci(boot.res,
+                            type="bca",
+                            conf = CI.level )
+          lo = round( bootCIs$bca[4], 2 )
+          hi = round( bootCIs$bca[5], 2 )
+          SE = sd(boot.res$t)
+
+          c(lo, hi, SE)
+
+        }, error = function(err) {
+          warning("\nHad problems computing BCa CI. \nYou could try using ci.method = 'sign.test' \nif I^2 > 0.50 and the point estimates appear unimodal and symmetric.")
+          boot.values = c(NA, NA, NA)
+        }
+        )
+
+        lo = boot.values[1]
+        hi = boot.values[2]
+        SE = boot.values[3]
+
+      } # end ci.method == "calibrated"
+
+  if (ci.method == "sign.test") {
+
+    warning("\n\nWarning: You are estimating a CI using the sign test method.\nThis method only works well when I^2 > 0.50 and the point estimates are\n relatively symmetric and unimodal.\nThis method does not provide a standard error estimate, only CI limits.")
+
+    Phat.np = prop_stronger_sign(q = q,
+                               yi = dat[[yi.name]],
+                               vi = dat[[vi.name]],
+                               CI.level = CI.level,
+                               tail = tail,
+                               R = R,
+                               return.vectors = FALSE )
+
+    lo = Phat.np$lo
+    hi = Phat.np$hi
+    SE = NA  # this method doesn't give an SE
   }
 
   ##### Normality Check #####
-  if ( !is.null(dat) ) {
+  if ( !is.null(dat) & !is.na(M) & !is.na(t2) ) {
     if ( !yi.name %in% names(dat) ) stop("dat must contain variable called yi.name.")
     if ( !vi.name %in% names(dat) ) stop("dat must contain variable called vi.name.")
 
